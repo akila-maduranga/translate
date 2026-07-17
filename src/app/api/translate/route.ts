@@ -3,6 +3,8 @@ import { translateBatch } from "@/lib/translate-context";
 import type { ResearchBrief } from "@/lib/translate-context";
 import type { SubtitleCue } from "@/lib/subtitle";
 import { getCachedBrief, applyOverrides } from "@/lib/brief-cache";
+import { getCurrentUser } from "@/lib/auth";
+import { checkCanTranslate, UsageLimitError } from "@/lib/usage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,6 +38,28 @@ export async function POST(req: NextRequest) {
     deepseek_api_key?: string;
   };
 
+  // Auth gate — must be logged in.
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json(
+      { error: "Please log in to translate subtitles." },
+      { status: 401 }
+    );
+  }
+
+  // Quota gate — free users limited to 1/day.
+  try {
+    await checkCanTranslate(user.id, user.role);
+  } catch (err: any) {
+    if (err instanceof UsageLimitError) {
+      return NextResponse.json(
+        { error: err.message, limit: err.status },
+        { status: 429 }
+      );
+    }
+    throw err;
+  }
+
   if (!body.cues || !Array.isArray(body.cues) || body.cues.length === 0) {
     return NextResponse.json({ error: "Missing 'cues'" }, { status: 400 });
   }
@@ -43,11 +67,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing 'brief'" }, { status: 400 });
   }
 
-  const apiKey = process.env.DEEPSEEK_API_KEY || body.deepseek_api_key || "";
+  // Server env var always wins — users no longer supply their own keys.
+  const apiKey = process.env.DEEPSEEK_API_KEY || "";
   if (!apiKey) {
     return NextResponse.json(
-      { error: "DeepSeek API key missing." },
-      { status: 401 }
+      {
+        error:
+          "Translation service is not configured. Please contact the site admin.",
+      },
+      { status: 503 }
     );
   }
 
@@ -79,6 +107,16 @@ export async function POST(req: NextRequest) {
       done: body.cues.length,
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 502 });
+    const msg = err.message || "";
+    let friendly = msg;
+    if (msg.includes("401") || msg.includes("Authentication Fails")) {
+      friendly = "Translation service authentication failed. Please contact the site admin.";
+    } else if (msg.includes("429")) {
+      friendly = "Translation service is busy. Please try again in a moment.";
+    }
+    return NextResponse.json(
+      { error: friendly },
+      { status: 502 }
+    );
   }
 }

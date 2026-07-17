@@ -120,3 +120,65 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ── Sinhala text handling ───────────────────────────────────────────────
+ *
+ * Sinhala script (U+0D80–U+0DFF) has tall ascenders and descenders that
+ * get clipped by default line-heights. We use Noto Sans/Serif Sinhala
+ * (loaded via next/font in layout.tsx) and add explicit rules for any
+ * element marked with `.sinhala` OR containing Sinhala Unicode via the
+ * `lang="si"` attribute.
+ *
+ * Per-glyph font fallback: when an element's `font-family` lists
+ * multiple fonts, browsers fall back per-glyph. So we list the Sinhala
+ * font AFTER the Latin font in the stack — Latin glyphs come from the
+ * Latin font, Sinhala glyphs from Noto Sans Sinhala.
+ */
+:root {
+  --font-sinhala: "Noto Sans Sinhala", "Noto Sans", "Geist", system-ui, sans-serif;
+  --font-sinhala-serif: "Noto Serif Sinhala", "Noto Serif", "Geist", Georgia, serif;
+}
+
+/* Apply the Sinhala font stack to any element with `lang="si"` or
+   `dir="auto"` containing Sinhala text. Use word-break: break-word so
+   long Sinhala compound words wrap properly (Sinhala doesn't use
+   spaces between joined words the way English does). */
+[lang="si"],
+.sinhala {
+  font-family: var(--font-sinhala);
+  line-height: 1.7; /* Sinhala needs more vertical space than Latin */
+  word-break: break-word;
+  overflow-wrap: break-word;
+  text-wrap: pretty;
+}
+
+.sinhala-serif {
+  font-family: var(--font-sinhala-serif);
+  line-height: 1.75;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Inputs/textareas with `dir="auto"` — let the browser detect script
+   direction (Sinhala is LTR but mixed content needs auto). */
+input[dir="auto"],
+textarea[dir="auto"] {
+  font-family: var(--font-sinhala);
+  line-height: 1.6;
+}
+
+/* In the subtitle cue grid, the Sinhala column should always use the
+   Sinhala font stack even if the cue is empty (so the placeholder
+   doesn't look out of place). */
+.cue-sinhala {
+  font-family: var(--font-sinhala);
+  line-height: 1.65;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Force pre-wrap on subtitle text so line breaks in the original SRT
+   are preserved. */
+.cue-text {
+  white-space: pre-wrap;
+}

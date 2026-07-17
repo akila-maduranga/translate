@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Noto_Sans_Sinhala, Noto_Serif_Sinhala } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 
@@ -11,6 +11,24 @@ const geistSans = Geist({
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+});
+
+// Noto Sans Sinhala — used for UI text and subtitle translations.
+// Subset "sinhala" loads only the Sinhala Unicode block.
+const notoSansSinhala = Noto_Sans_Sinhala({
+  variable: "--font-sinhala",
+  subsets: ["sinhala"],
+  weight: ["400", "500", "600", "700"],
+  display: "swap",
+});
+
+// Noto Serif Sinhala — used for the research brief display, where a
+// more editorial feel helps readability of long passages.
+const notoSerifSinhala = Noto_Serif_Sinhala({
+  variable: "--font-sinhala-serif",
+  subsets: ["sinhala"],
+  weight: ["400", "500", "600"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -50,7 +68,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
+        className={`${geistSans.variable} ${geistMono.variable} ${notoSansSinhala.variable} ${notoSerifSinhala.variable} antialiased bg-background text-foreground`}
       >
         {children}
         <Toaster />

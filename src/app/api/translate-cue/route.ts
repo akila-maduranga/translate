@@ -3,6 +3,7 @@ import { translateBatch } from "@/lib/translate-context";
 import type { ResearchBrief } from "@/lib/translate-context";
 import type { SubtitleCue } from "@/lib/subtitle";
 import { getCachedBrief, applyOverrides } from "@/lib/brief-cache";
+import { getCurrentUser } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,22 +12,26 @@ export const maxDuration = 60;
 /**
  * POST /api/translate-cue
  *
- * Re-translate a SINGLE cue. Used by the per-cue "re-translate" button
- * in the workspace UI for fine-tuning.
+ * Re-translate a SINGLE cue. Used by the per-cue "re-translate" button.
+ * Does NOT count against the daily quota (it's fine-tuning, not a new
+ * translation). Still requires login.
  *
  * Body: {
- *   cue: SubtitleCue,                // the cue to re-translate
- *   previous_cues: SubtitleCue[],    // rolling context (already translated)
+ *   cue: SubtitleCue,
+ *   previous_cues: SubtitleCue[],
  *   brief: ResearchBrief,
- *   tmdb_id?: number,
- *   tmdb_media_type?: "movie" | "tv",
- *   instruction?: string,            // optional user note, e.g. "make it shorter"
- *   deepseek_api_key?: string
+ *   tmdb_id?, tmdb_media_type?, instruction?
  * }
- *
- * Returns: { translation: string }
  */
 export async function POST(req: NextRequest) {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json(
+      { error: "Please log in to translate subtitles." },
+      { status: 401 }
+    );
+  }
+
   const body = (await req.json().catch(() => ({}))) as {
     cue?: SubtitleCue;
     previous_cues?: SubtitleCue[];
@@ -34,7 +39,6 @@ export async function POST(req: NextRequest) {
     tmdb_id?: number;
     tmdb_media_type?: "movie" | "tv";
     instruction?: string;
-    deepseek_api_key?: string;
   };
 
   if (!body.cue) {
@@ -44,11 +48,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing 'brief'" }, { status: 400 });
   }
 
-  const apiKey = process.env.DEEPSEEK_API_KEY || body.deepseek_api_key || "";
+  const apiKey = process.env.DEEPSEEK_API_KEY || "";
   if (!apiKey) {
     return NextResponse.json(
-      { error: "DeepSeek API key missing." },
-      { status: 401 }
+      { error: "Translation service is not configured." },
+      { status: 503 }
     );
   }
 
@@ -64,8 +68,6 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // If user gave an instruction, append it to the brief's cultural_notes
-  // so the model sees it as a directive for this cue only.
   if (body.instruction?.trim()) {
     effectiveBrief = {
       ...effectiveBrief,
@@ -88,6 +90,13 @@ export async function POST(req: NextRequest) {
       translation: translations[0] ?? "",
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 502 });
+    const msg = err.message || "";
+    let friendly = msg;
+    if (msg.includes("401") || msg.includes("Authentication Fails")) {
+      friendly = "Translation service authentication failed.";
+    } else if (msg.includes("429")) {
+      friendly = "Translation service is busy. Try again in a moment.";
+    }
+    return NextResponse.json({ error: friendly }, { status: 502 });
   }
 }

@@ -14,7 +14,6 @@ import {
   Database,
 } from "lucide-react";
 import type { TranslationContextBundle } from "@/lib/tmdb";
-import { loadSettings } from "@/lib/settings";
 import type { ResearchBrief } from "@/lib/translate-context";
 
 interface ResearchPanelProps {
@@ -39,9 +38,6 @@ export function ResearchPanel({
   const abortRef = useRef<AbortController | null>(null);
   const { toast } = useToast();
 
-  // When the selected movie changes, try to load any cached brief
-  // immediately (no DeepSeek call needed). If none is cached, the
-  // user can click "Run Research" to generate one.
   const loadFromCache = useCallback(async () => {
     if (!tmdbId || !tmdbMediaType) {
       setText("");
@@ -53,7 +49,6 @@ export function ResearchPanel({
         `/api/brief/get?tmdb_id=${tmdbId}&tmdb_media_type=${tmdbMediaType}`
       );
       if (res.status === 404) {
-        // No cache — clear the panel so user knows they need to run research.
         setText("");
         setCacheHit(false);
         return;
@@ -63,8 +58,8 @@ export function ResearchPanel({
         const header =
           `[CACHE HIT] Loaded cached research brief for ${data.title}.\n` +
           `Last updated: ${new Date(data.updatedAt).toLocaleString()}\n` +
-          `Click "Refresh" to re-run DeepSeek and overwrite.\n\n`;
-        setText(header + "(Cached — open the Glossary Editor to view locked terms.)");
+          `Click "Refresh" to re-run with AI.\n\n`;
+        setText(header + "(Cached — open the Glossary tab to view locked terms.)");
         setCacheHit(true);
         onBriefReady(data.brief);
         onBriefVersionChange?.(Date.now());
@@ -84,16 +79,6 @@ export function ResearchPanel({
       if (!tmdbId || !tmdbMediaType) {
         toast({
           title: "Pick a movie first",
-          description: "Research is keyed by the TMDB id.",
-          variant: "destructive",
-        });
-        return;
-      }
-      const settings = loadSettings();
-      if (!settings.deepseekApiKey) {
-        toast({
-          title: "DeepSeek API key required",
-          description: "Open Settings and paste your DeepSeek API key.",
           variant: "destructive",
         });
         return;
@@ -114,18 +99,23 @@ export function ResearchPanel({
             context,
             tmdb_id: tmdbId,
             tmdb_media_type: tmdbMediaType,
-            deepseek_api_key: settings.deepseekApiKey,
             force_refresh: forceRefresh,
           }),
           signal: ac.signal,
         });
 
         if (!res.ok || !res.body) {
-          const errText = await res.text();
-          throw new Error(errText || `Request failed: ${res.status}`);
+          let errMsg = `Request failed: ${res.status}`;
+          try {
+            const errJson = await res.json();
+            errMsg = errJson.error || errMsg;
+          } catch {
+            const errText = await res.text();
+            if (errText) errMsg = errText;
+          }
+          throw new Error(errMsg);
         }
 
-        // Check cache-hit header for display.
         const wasCacheHit = res.headers.get("x-cache-hit") === "true";
         setCacheHit(wasCacheHit);
 
@@ -145,9 +135,7 @@ export function ResearchPanel({
           throw new Error(full.split("[ERROR]")[1]?.trim() || "Research failed");
         }
 
-        // After streaming finishes, the server has cached the structured
-        // brief. Fetch it now so the glossary editor + workspace have
-        // the real ResearchBrief object (not just the markdown stream).
+        // Fetch the structured brief that was just cached.
         const briefRes = await fetch(
           `/api/brief/get?tmdb_id=${tmdbId}&tmdb_media_type=${tmdbMediaType}`
         );
@@ -160,12 +148,10 @@ export function ResearchPanel({
         }
 
         toast({
-          title: wasCacheHit
-            ? "Loaded from cache"
-            : "Research brief complete",
+          title: wasCacheHit ? "Loaded from cache" : "Research complete",
           description: wasCacheHit
-            ? "No DeepSeek call needed. Click Refresh to re-run."
-            : "Translation context locked and cached. Re-translations of this movie are now free.",
+            ? "No AI call needed."
+            : "Translation context is ready.",
         });
       } catch (err: any) {
         if (err.name !== "AbortError") {
@@ -190,10 +176,10 @@ export function ResearchPanel({
 
   return (
     <Card className="flex flex-col p-4 gap-3 h-full">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2 flex-wrap">
           <Sparkles className="h-4 w-4 text-primary" />
-          <h3 className="font-semibold">Research Brief</h3>
+          <h3 className="font-semibold">Research</h3>
           {streaming && (
             <Badge variant="secondary" className="gap-1">
               <Loader2 className="h-3 w-3 animate-spin" />
@@ -207,9 +193,7 @@ export function ResearchPanel({
             </Badge>
           )}
           {!streaming && text && !cacheHit && (
-            <Badge variant="outline" className="gap-1">
-              Ready
-            </Badge>
+            <Badge variant="outline">Ready</Badge>
           )}
         </div>
         <div className="flex items-center gap-1">
@@ -220,7 +204,7 @@ export function ResearchPanel({
               onClick={() => run(true)}
               disabled={!context || streaming}
               className="gap-1"
-              title="Re-run DeepSeek and overwrite the cached brief"
+              title="Re-run research and overwrite the cached brief"
             >
               <RefreshCw className="h-3 w-3" />
               Refresh
@@ -244,13 +228,6 @@ export function ResearchPanel({
         </div>
       </div>
 
-      <div className="text-xs text-muted-foreground">
-        DeepSeek analyses the movie&apos;s plot, characters, tone, and culture
-        — locking consistent Sinhala terminology. Briefs are{" "}
-        <span className="font-medium">cached server-side</span>, so
-        re-translating the same movie later is free.
-      </div>
-
       {error && (
         <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-sm text-destructive">
           <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
@@ -261,13 +238,13 @@ export function ResearchPanel({
       <ScrollArea className="flex-1 min-h-0 rounded-md border bg-muted/30">
         <div className="p-3">
           {text ? (
-            <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
+            <pre className="whitespace-pre-wrap sinhala-serif text-sm leading-relaxed" lang="si">
               {text}
             </pre>
           ) : (
             <div className="text-sm text-muted-foreground italic">
               {context
-                ? "Click \"Run Research\" to let DeepSeek analyse this title."
+                ? "Click \"Run Research\" to analyse this movie."
                 : "Pick a movie first to enable research."}
             </div>
           )}

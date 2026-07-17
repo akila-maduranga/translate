@@ -242,7 +242,9 @@ export function GlossaryEditor({
                   setEditing({ ...editing, sinhala: e.target.value })
                 }
                 placeholder="උදා: ස්කයිලර්"
-                dir="auto"
+                className="sinhala"
+                lang="si"
+                dir="ltr"
               />
             </div>
           </div>
@@ -292,7 +294,7 @@ export function GlossaryEditor({
                       <div className="text-sm">
                         <span className="font-medium">{o.english}</span>
                         <span className="mx-1 text-muted-foreground">→</span>
-                        <span className="font-medium" dir="auto">
+                        <span className="font-medium sinhala" lang="si" dir="ltr">
                           {o.sinhala}
                         </span>
                       </div>
@@ -347,7 +349,7 @@ export function GlossaryEditor({
                       <div className="flex-1 min-w-0">
                         <span className="font-medium">{g.english}</span>
                         <span className="mx-1 text-muted-foreground">→</span>
-                        <span dir="auto">{g.sinhala}</span>
+                        <span className="sinhala" lang="si" dir="ltr">{g.sinhala}</span>
                         {g.note && (
                           <span className="ml-2 text-xs text-muted-foreground">
                             {"// "}{g.note}
@@ -403,7 +405,7 @@ export function GlossaryEditor({
                         </span>
                       )}
                     </div>
-                    <Badge variant="outline" dir="auto">
+                    <Badge variant="outline" className="sinhala" lang="si" dir="ltr">
                       {c.sinhala_name}
                     </Badge>
                   </div>

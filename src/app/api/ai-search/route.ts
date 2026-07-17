@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { callDeepSeek } from "@/lib/deepseek";
 import type { TranslationContextBundle } from "@/lib/tmdb";
+import { getCurrentUser } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,43 +10,28 @@ export const maxDuration = 60;
 /**
  * POST /api/ai-search
  *
- * AI fallback for movie lookup. Used when:
- *   - TMDB API key is not configured
- *   - TMDB returns no results for a query
- *   - The user explicitly types a description rather than a title
- *
- * Body: {
- *   query: string,                  // free-text: "inception", "the 2010 dream heist movie", etc.
- *   deepseek_api_key?: string
- * }
- *
- * Returns: {
- *   results: TranslationContextBundle[]  // 1-3 candidate matches
- * }
- *
- * Each result is shaped exactly like a TMDB-derived context bundle, so
- * the rest of the pipeline (research, glossary editor, translate)
- * works unchanged. The `tmdb_id` field is set to 0 to signal "AI-
- * generated, not from TMDB" — the cache will still key off the title.
+ * AI fallback for movie lookup — used when TMDB isn't configured or
+ * returns no results. Requires login.
  */
 export async function POST(req: NextRequest) {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ error: "Please log in." }, { status: 401 });
+  }
+
   const body = (await req.json().catch(() => ({}))) as {
     query?: string;
-    deepseek_api_key?: string;
   };
 
   if (!body.query?.trim()) {
     return NextResponse.json({ error: "Missing 'query'" }, { status: 400 });
   }
 
-  const apiKey = process.env.DEEPSEEK_API_KEY || body.deepseek_api_key || "";
+  const apiKey = process.env.DEEPSEEK_API_KEY || "";
   if (!apiKey) {
     return NextResponse.json(
-      {
-        error:
-          "Both TMDB and DeepSeek API keys are missing. Set at least one to enable movie lookup.",
-      },
-      { status: 401 }
+      { error: "Service is not configured. Please contact the site admin." },
+      { status: 503 }
     );
   }
 
@@ -59,18 +45,18 @@ Return JSON ONLY — no prose. Schema:
     {
       "title": string,
       "media_type": "movie" | "tv",
-      "release_year": string,           // "2010" or "" if unknown
+      "release_year": string,
       "runtime_minutes": number | null,
       "genres": string[],
       "tagline": string,
-      "overview": string,                // 3-5 sentence plot summary
-      "cast": [{ "actor": string, "character": string }],  // up to 10 main cast
+      "overview": string,
+      "cast": [{ "actor": string, "character": string }],
       "directors": string[],
       "writers": string[],
       "keywords": string[],
       "production_countries": string[],
       "spoken_languages": string[],
-      "confidence": "high" | "medium" | "low"   // how sure you are this is the right title
+      "confidence": "high" | "medium" | "low"
     }
   ]
 }
@@ -78,14 +64,9 @@ Return JSON ONLY — no prose. Schema:
 Rules:
   1. Return 1-3 results, most-likely first.
   2. If you genuinely cannot identify the title, return an empty results array.
-  3. Do NOT invent cast, plot, or characters you are not confident about. Better to leave a field empty than to hallucinate.
-  4. Keep overviews focused on translation-relevant facts (period, setting, character dynamics, cultural context).`;
+  3. Do NOT invent cast, plot, or characters you are not confident about.`;
 
-  const userPrompt = `Identify this movie/TV show and return its metadata as JSON:
-
-"${body.query}"
-
-Return JSON now.`;
+  const userPrompt = `Identify this movie/TV show and return its metadata as JSON:\n\n"${body.query}"\n\nReturn JSON now.`;
 
   try {
     const result = await callDeepSeek({
@@ -121,10 +102,7 @@ Return JSON now.`;
       parsed = JSON.parse(result.content);
     } catch {
       return NextResponse.json(
-        {
-          error: "DeepSeek returned invalid JSON for AI search.",
-          raw: result.content.slice(0, 500),
-        },
+        { error: "Could not identify the movie. Try a different query." },
         { status: 502 }
       );
     }
@@ -156,9 +134,6 @@ Return JSON now.`;
 
     return NextResponse.json({ results, source: "ai" });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: err.message },
-      { status: 502 }
-    );
+    return NextResponse.json({ error: err.message }, { status: 502 });
   }
 }

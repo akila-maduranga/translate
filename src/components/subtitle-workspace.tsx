@@ -37,13 +37,21 @@ import {
 } from "@/lib/subtitle";
 import type { TranslationContextBundle } from "@/lib/tmdb";
 import type { ResearchBrief } from "@/lib/translate-context";
-import { loadSettings } from "@/lib/settings";
 
 interface SubtitleWorkspaceProps {
   context: TranslationContextBundle | null;
   brief: ResearchBrief | null;
   tmdbId: number | null;
   tmdbMediaType: "movie" | "tv" | null;
+  /** Called when a translation completes — used to refresh the usage counter. */
+  onTranslationComplete?: (info: {
+    title: string;
+    cueCount: number;
+    translatedCount: number;
+    source: "tmdb" | "ai";
+    format: "srt" | "vtt";
+    durationMs: number;
+  }) => void;
 }
 
 export function SubtitleWorkspace({
@@ -51,6 +59,7 @@ export function SubtitleWorkspace({
   brief,
   tmdbId,
   tmdbMediaType,
+  onTranslationComplete,
 }: SubtitleWorkspaceProps) {
   const [cues, setCues] = useState<SubtitleCue[]>([]);
   const [format, setFormat] = useState<SubtitleFormat>("srt");
@@ -126,16 +135,6 @@ export function SubtitleWorkspace({
     }
     if (cues.length === 0) return;
 
-    const settings = loadSettings();
-    if (!settings.deepseekApiKey) {
-      toast({
-        title: "DeepSeek API key required",
-        description: "Open Settings and paste your DeepSeek API key.",
-        variant: "destructive",
-      });
-      return;
-    }
-
     setTranslating(true);
     setDone(0);
     setTotal(cues.length);
@@ -144,9 +143,10 @@ export function SubtitleWorkspace({
     const ac = new AbortController();
     abortRef.current = ac;
 
-    const batchSize = settings.batchSize;
-    const rolling = settings.rollingContext;
+    const batchSize = 8;  // sensible default, no longer user-configurable
+    const rolling = 4;
     const localCues = cues.map((c) => ({ ...c }));
+    const startTime = Date.now();
 
     try {
       for (let i = 0; i < localCues.length; i += batchSize) {
@@ -163,12 +163,14 @@ export function SubtitleWorkspace({
             brief,
             tmdb_id: tmdbId ?? undefined,
             tmdb_media_type: tmdbMediaType ?? undefined,
-            deepseek_api_key: settings.deepseekApiKey,
           }),
           signal: ac.signal,
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Translation failed");
+        if (!res.ok) {
+          const msg = data.error || "Translation failed";
+          throw new Error(data.hint ? `${msg} — ${data.hint}` : msg);
+        }
 
         const translations: string[] = data.translations ?? [];
         for (let j = 0; j < batch.length; j++) {
@@ -189,10 +191,36 @@ export function SubtitleWorkspace({
       }
 
       if (!ac.signal.aborted) {
+        const translatedCount = localCues.filter((c) => c.translated).length;
         toast({
           title: "Translation complete",
-          description: `${localCues.length} cues translated to Sinhala.`,
+          description: `${translatedCount} of ${localCues.length} cues translated to Sinhala.`,
         });
+        // Record the job — this increments the daily usage counter.
+        try {
+          await fetch("/api/jobs/record", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              title: context?.title ?? "Unknown",
+              cueCount: localCues.length,
+              translatedCount,
+              source: tmdbId && tmdbId < 0 ? "ai" : "tmdb",
+              format,
+              durationMs: Date.now() - startTime,
+            }),
+          });
+          onTranslationComplete?.({
+            title: context?.title ?? "Unknown",
+            cueCount: localCues.length,
+            translatedCount,
+            source: tmdbId && tmdbId < 0 ? "ai" : "tmdb",
+            format,
+            durationMs: Date.now() - startTime,
+          });
+        } catch (err) {
+          console.error("Failed to record job:", err);
+        }
       }
     } catch (err: any) {
       if (err.name !== "AbortError") {
@@ -227,17 +255,8 @@ export function SubtitleWorkspace({
       });
       return;
     }
-    const settings = loadSettings();
-    if (!settings.deepseekApiKey) {
-      toast({
-        title: "DeepSeek API key required",
-        variant: "destructive",
-      });
-      return;
-    }
-
     const cue = cues[idx];
-    const rolling = settings.rollingContext;
+    const rolling = 4;
     const previousCues = cues
       .slice(Math.max(0, idx - rolling), idx)
       .map((c) => ({ ...c }));
@@ -254,11 +273,13 @@ export function SubtitleWorkspace({
           tmdb_id: tmdbId ?? undefined,
           tmdb_media_type: tmdbMediaType ?? undefined,
           instruction: instruction?.trim() || undefined,
-          deepseek_api_key: settings.deepseekApiKey,
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Re-translate failed");
+      if (!res.ok) {
+        const msg = data.error || "Re-translate failed";
+        throw new Error(data.hint ? `${msg} — ${data.hint}` : msg);
+      }
 
       setCues((prev) => {
         const next = [...prev];
@@ -492,12 +513,13 @@ export function SubtitleWorkspace({
                         )}
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        <div className="text-sm whitespace-pre-wrap">{cue.text}</div>
-                        <div className="text-sm font-medium">
+                        <div className="text-sm cue-text">{cue.text}</div>
+                        <div className="text-sm font-medium cue-sinhala">
                           {cue.translated ? (
                             <span
-                              className="text-foreground whitespace-pre-wrap"
-                              dir="auto"
+                              className="text-foreground cue-text"
+                              lang="si"
+                              dir="ltr"
                             >
                               {cue.translated}
                             </span>
@@ -518,8 +540,10 @@ export function SubtitleWorkspace({
                             <Input
                               value={editValue}
                               onChange={(e) => setEditValue(e.target.value)}
-                              placeholder="Sinhala translation"
-                              dir="auto"
+                              placeholder="සිංහල පරිවර්තනය"
+                              className="sinhala"
+                              lang="si"
+                              dir="ltr"
                               autoFocus
                             />
                             <Input

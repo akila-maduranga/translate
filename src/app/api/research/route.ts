@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { streamResearchBrief, buildResearchBrief } from "@/lib/translate-context";
 import type { TranslationContextBundle } from "@/lib/tmdb";
 import { getCachedBrief, upsertCachedBrief } from "@/lib/brief-cache";
+import { getCurrentUser } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,11 +33,19 @@ export const maxDuration = 300;
  * loads of the same movie (or re-translations) read from the cache.
  */
 export async function POST(req: NextRequest) {
+  // Auth gate — must be logged in.
+  const user = await getCurrentUser();
+  if (!user) {
+    return new Response(JSON.stringify({ error: "Please log in to continue." }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
   const body = (await req.json().catch(() => ({}))) as {
     context?: TranslationContextBundle;
     tmdb_id?: number;
     tmdb_media_type?: "movie" | "tv";
-    deepseek_api_key?: string;
     force_refresh?: boolean;
   };
 
@@ -87,15 +96,14 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 2. Live research — requires DeepSeek API key.
-  const apiKey = process.env.DEEPSEEK_API_KEY || body.deepseek_api_key || "";
+  // 2. Live research — server-side DeepSeek key only (no client keys).
+  const apiKey = process.env.DEEPSEEK_API_KEY || "";
   if (!apiKey) {
     return new Response(
       JSON.stringify({
-        error:
-          "DeepSeek API key missing. Set DEEPSEEK_API_KEY on the server or include deepseek_api_key in the request body.",
+        error: "Translation service is not configured. Please contact the site admin.",
       }),
-      { status: 401, headers: { "content-type": "application/json" } }
+      { status: 503, headers: { "content-type": "application/json" } }
     );
   }
 
@@ -130,7 +138,16 @@ export async function POST(req: NextRequest) {
 
         send("[DONE]");
       } catch (err: any) {
-        send(`\n\n[ERROR] ${err.message}`);
+        const msg = err.message || "";
+        let friendly = msg;
+        if (msg.includes("401") || msg.includes("Authentication Fails")) {
+          friendly = "Translation service authentication failed. Please contact the site admin.";
+        } else if (msg.includes("429")) {
+          friendly = "Translation service is busy. Please try again in a moment.";
+        } else if (msg.includes("timed out") || msg.includes("timeout")) {
+          friendly = "Research timed out. Try again — research can take 30-60 seconds for complex movies.";
+        }
+        send(`\n\n[ERROR] ${friendly}`);
       } finally {
         controller.close();
       }
