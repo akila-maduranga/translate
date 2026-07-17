@@ -1,0 +1,20 @@
+[build]
+  command = "bun run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "20"
+  NEXT_USE_NETLIFY_EDGE = "true"
+
+# The Next.js Runtime plugin handles the .next output automatically.
+# We just need to install the plugin via [[plugins]] below.
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# API routes can run up to 5 minutes on Netlify Pro / 26s on free tier.
+# Our research + translate endpoints stream chunks, so they should stay
+# inside even the free-tier limit as long as the user's subtitle file
+# isn't huge.
+[functions]
+  node_bundler = "esbuild"
