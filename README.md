@@ -40,27 +40,65 @@ SubSinhala fixes this with a two-phase pipeline:
 
 ## Setup
 
-### 1. Get API keys
+### 1. Get API keys + a database
 
-- **TMDB** (free, optional but recommended): create a v4 read access token at
-  https://www.themoviedb.org/settings/api
-- **DeepSeek** (required for translation; can also serve as movie lookup
-  fallback): create an API key at https://platform.deepseek.com/api_keys
+You need three things:
+
+| What | Where | Required? |
+|------|-------|-----------|
+| **Neon database** (Postgres) | https://neon.tech — free tier is plenty | **Yes** for production. For local-only dev you can switch back to SQLite (see below). |
+| **TMDB API key** | https://www.themoviedb.org/settings/api — request a v4 *Read Access Token* | Optional but recommended (poster images, richer metadata). If unset, falls back to AI movie identification. |
+| **DeepSeek API key** | https://platform.deepseek.com/api_keys | **Required** — powers research, translation, and AI movie fallback. |
+
+**Neon setup** (2 minutes):
+1. Sign up at https://neon.tech
+2. Create a new project — name it whatever you like
+3. On the project dashboard, copy the **Connection string** — it looks like:
+   ```
+   postgres://user:password@ep-cool-name-123456.us-east-2.aws.neon.tech/neondb?sslmode=require
+   ```
+4. Save it — you'll paste it as `DATABASE_URL` below.
 
 ### 2. Configure environment
 
-For Netlify, set these in your site's **Settings → Environment variables**:
+Copy `.env.example` to `.env.local` and fill in your values:
 
-```
-TMDB_API_KEY=eyJhbGciOiJIUzI1NiJ9...        # optional but recommended
-DEEPSEEK_API_KEY=sk-...                       # required
-DATABASE_URL=file:./db/custom.db              # SQLite (or Postgres URL)
+```bash
+cp .env.example .env.local
 ```
 
-For local dev, either set the same env vars in `.env.local` **or** paste the
-keys into the in-app **Settings** dialog (stored in browser localStorage).
+```env
+# .env.local
+DATABASE_URL="postgres://user:password@ep-xxx.region.aws.neon.tech/neondb?sslmode=require"
+TMDB_API_KEY="eyJhbGciOiJIUzI1NiJ9..."        # optional
+DEEPSEEK_API_KEY="sk-..."                       # required
+```
 
-### 3. Install & run locally
+For **Netlify**, set the same three vars in **Site settings → Environment
+variables**. The `@netlify/plugin-nextjs` runtime will pick them up
+automatically.
+
+> **Local dev without Neon**: if you just want to hack on the UI locally,
+> you can switch the Prisma datasource back to SQLite:
+> 1. Edit `prisma/schema.prisma` — change `provider = "postgresql"` to `provider = "sqlite"`
+> 2. Set `DATABASE_URL="file:./db/local.db"` in `.env.local`
+> 3. Run `bun run db:push`
+>
+> SQLite works fine locally, but **will not persist on Netlify Functions**
+> (every cold start wipes the file). Use Neon for any deployed environment.
+
+### 3. Initialize the database
+
+After setting `DATABASE_URL`, push the schema:
+
+```bash
+bun run db:push
+```
+
+This creates the `ResearchBriefCache` table in your Neon database. You only
+need to run this once (and again whenever you change the schema).
+
+### 4. Install & run locally
 
 ```bash
 bun install
@@ -71,11 +109,19 @@ Open http://localhost:3000, search a movie (or describe it if no TMDB key),
 click **Run Research**, then upload your `.srt` / `.vtt` file and click
 **Translate All**.
 
-### 4. Deploy to Netlify
+### 5. Deploy to Netlify
 
 This repo includes a `netlify.toml` configured for the official
-`@netlify/plugin-nextjs` runtime. Just connect the repo on Netlify and it
-will build & deploy automatically.
+`@netlify/plugin-nextjs` runtime. Just connect the repo on Netlify, set the
+three environment variables (`DATABASE_URL`, `TMDB_API_KEY`, `DEEPSEEK_API_KEY`)
+in site settings, and it will build & deploy automatically.
+
+**Why Neon specifically?**
+- **Serverless Postgres** — scales to zero when idle, perfect for low-traffic side projects
+- **Branching** — you can spin up a database branch per Git branch for testing
+- **Persistent** — survives Netlify function cold starts (unlike bundled SQLite)
+- **Free tier** — generous free quota for hobby projects
+- **Same connection string for local + prod** — no driver differences
 
 ## How the research brief works
 
