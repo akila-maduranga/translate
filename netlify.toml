@@ -9,24 +9,26 @@
 # Required environment variables (set in Netlify UI → Site settings →
 # Environment variables):
 #
-#   DATABASE_URL    — Neon Postgres connection string
-#                     e.g. postgres://user:pass@ep-xxx.neon.tech/db?sslmode=require
-#                     Get one free at https://neon.tech
+#   DATABASE_URL     — Neon Postgres connection string
+#                      e.g. postgres://user:pass@ep-xxx.neon.tech/db?sslmode=require
+#                      Get one free at https://neon.tech
 #
 #   DEEPSEEK_API_KEY — Required. Powers research, translation, AI movie fallback.
 #                      Get one at https://platform.deepseek.com/api_keys
 #
-#   TMDB_API_KEY    — Optional but recommended. v4 Read Access Token from
-#                     https://www.themoviedb.org/settings/api
-#                     If unset, falls back to AI movie identification.
+#   TMDB_API_KEY     — Optional but recommended. v4 Read Access Token from
+#                      https://www.themoviedb.org/settings/api
+#
+#   AUTH_SECRET      — Required. Random 32-char hex string for signing sessions.
+#                      Generate with: openssl rand -hex 32
+#
+#   ADMIN_EMAIL      — Required. Initial admin account email.
+#   ADMIN_PASSWORD   — Required. Initial admin account password.
+#   ADMIN_NAME       — Optional. Display name for the admin.
 
 # The Next.js Runtime plugin handles the .next output automatically.
 [[plugins]]
   package = "@netlify/plugin-nextjs"
 
-# API routes can run up to 5 minutes on Netlify Pro / 26s on free tier.
-# Our research + translate endpoints stream chunks, so they should stay
-# inside even the free-tier limit as long as the user's subtitle file
-# isn't huge.
 [functions]
   node_bundler = "esbuild"
