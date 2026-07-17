@@ -16,6 +16,10 @@
 #   DEEPSEEK_API_KEY — Required. Powers research, translation, AI movie fallback.
 #                      Get one at https://platform.deepseek.com/api_keys
 #
+#   DEEPSEEK_MODEL   — Optional. Default: "deepseek-v4-pro".
+#                      Alternatives: "deepseek-v4-flash" (faster/cheaper),
+#                      "deepseek-chat" (V3 fallback).
+#
 #   TMDB_API_KEY     — Optional but recommended. v4 Read Access Token from
 #                      https://www.themoviedb.org/settings/api
 #
