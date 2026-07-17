@@ -1,0 +1,57 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Post {
+  id        String   @id @default(cuid())
+  title     String
+  content   String?
+  published Boolean  @default(false)
+  authorId  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Cache for DeepSeek-generated research briefs, keyed by TMDB id + media type.
+/// Lets users re-translate the same movie without paying for another research
+/// call. User-edited glossary overrides are also stored here so they persist
+/// across sessions.
+model ResearchBriefCache {
+  id            String   @id @default(cuid())
+  /// Composite key: `${tmdbMediaType}-${tmdbId}` (e.g. "movie-27205").
+  cacheKey      String   @unique
+  tmdbId        Int
+  tmdbMediaType String
+  /// Title from TMDB, stored for quick display in a cache list UI.
+  title         String
+  /// Raw markdown streamed from /api/research (human-readable brief).
+  rawMarkdown   String
+  /// Structured brief JSON (ResearchBrief schema) used by /api/translate.
+  briefJson     String
+  /// User-supplied glossary overrides — applied AFTER the locked brief
+  /// glossary, so they always win. JSON array of {english, sinhala, note?}.
+  userOverrides String   @default("[]")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([tmdbId, tmdbMediaType])
+}
