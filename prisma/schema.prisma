@@ -9,7 +9,20 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  // Neon is a serverless Postgres — perfect for Netlify deploys because
+  // it persists across function invocations (unlike the bundled SQLite
+  // db, which is ephemeral on serverless). To use it, set:
+  //
+  //   DATABASE_URL=postgres://user:pass@ep-xxx.region.aws.neon.tech/dbname?sslmode=require
+  //
+  // For local dev you can still use SQLite by setting:
+  //
+  //   DATABASE_URL=file:./db/local.db
+  //
+  // ...and switching this provider back to "sqlite". But for any
+  // deployed environment (Netlify, Vercel, etc.), prefer "postgresql"
+  // + Neon so the cache survives cold starts.
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
