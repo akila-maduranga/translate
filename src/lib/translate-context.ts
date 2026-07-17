@@ -23,7 +23,7 @@
  */
 
 import type { TranslationContextBundle } from "@/lib/tmdb";
-import { callDeepSeek, streamDeepSeek } from "@/lib/deepseek";
+import { callDeepSeek } from "@/lib/deepseek";
 import type { SubtitleCue } from "@/lib/subtitle";
 import { toonStringify } from "@/lib/toon";
 
@@ -46,176 +46,277 @@ export interface ResearchBrief {
   glossary: GlossaryEntry[];
 }
 
-const RESEARCH_SYSTEM_PROMPT = `You are a Sinhala subtitle translator and film/TV researcher.
+// ── Expert film localizer prompt ─────────────────────────────────────────
+//
+// This prompt is split into TWO calls to fit within Netlify's 26s
+// function timeout:
+//   Step 1: Context analysis (tone, characters, locations, dynamics)
+//   Step 2: Glossary generation (using step 1 as context)
+//
+// Each call takes 10-20s — well within the limit. Combined, they
+// produce a richer brief than a single call could.
 
-You will be given structured metadata about a movie or TV show (title, plot, cast with character names, genres, keywords, etc.) and your job is to prepare a TRANSLATION BRIEF that a downstream translator agent will use to subtitle this title from English into Sinhala (Sinhala script: සිංහල අකුරු).
+const LOCALIZER_SYSTEM_PROMPT = `You are an expert film localizer and professional subtitle translator specializing in English to natural, spoken Sinhala (කතා කරන භාෂාව).
 
-Your brief MUST:
-  1. Summarise the plot in 4-6 sentences — focusing on the parts a translator needs to know to disambiguate words.
-  2. Describe the setting (period, place, social class) because it heavily affects word choice.
-  3. Identify the overall TONE (e.g. comedic, gritty, melodramatic, satirical) and REGISTER (formal, colloquial, slangy, period-archaic) — translator MUST match this.
-  4. List every named character with a 1-2 sentence description AND a locked Sinhala transliteration of their name. Use phonetic transliteration that sounds natural to a Sinhala reader. Be consistent.
-  5. List every named location with its Sinhala form.
-  6. List recurring phrases / idioms / slogans / running gags the translator must keep consistent across the whole subtitle file.
-  7. List proper nouns (ships, weapons, spells, organisations, fictional terms) with locked Sinhala forms.
-  8. Add CULTURAL NOTES — anything a Sinhala-speaking viewer needs (e.g. untranslatable jokes, cultural equivalents, taboo words to soften, period accuracy).
-  9. Produce a final GLOSSARY array consolidating everything a translator needs as {english, sinhala, note?} triples.
+You use the DeepSeek-V4 model (deepseek-v4-pro) and produce briefs that make subtitles sound like real Sri Lankan conversation — NOT like Google Translate or formal literary Sinhala (ලිඛිත භාෂාව).
 
 CRITICAL RULES:
-  - Output MUST be valid JSON and nothing else.
-  - All Sinhala strings MUST use Sinhala Unicode script (අ-෴).
-  - Never mix Latin letters into Sinhala text except for proper nouns that are conventionally kept in English (e.g. "NASA", "FBI").
-  - Transliterations must be the SAME every time the same name appears — pick once and commit.
-  - Keep notes in English (for the downstream agent) but the actual sinhala_name / sinhala fields in Sinhala script.`;
+  - All Sinhala text MUST use everyday, casual, spoken Sinhala (කතාබහ භාෂාව).
+  - NEVER use formal, literary, or news-style Sinhala (ලිඛිත භාෂාව).
+  - Use natural pronouns: "ඔයා" (oya) for casual/respectful, "උඹ" (umba) / "තමුසේ" (thamuse) for aggressive/casual.
+  - Keep translations concise to fit subtitle character limits.
+  - Example tone: "I told you so" → "මම කිව්වනේ." / "Let's get out of here" → "අපි ඉක්මනට මෙතනින් යමු."
+  - Output MUST be valid JSON. No prose before/after.
+  - All Sinhala strings MUST use Sinhala Unicode script (අ-෴).`;
+
+// ── Step 1: Context analysis ─────────────────────────────────────────────
+//
+// Tone, character dynamics, locations, setting. ~10-15 seconds.
+
+const STEP1_SYSTEM_PROMPT = `${LOCALIZER_SYSTEM_PROMPT}
+
+You are doing Part 1: Movie Research & Context Analysis.
+
+Given movie metadata, produce JSON with:
+{
+  "summary": "3-5 sentence plot summary focused on what a translator needs to know",
+  "tone": "Brief tone description (e.g. 'gritty crime thriller, tense and fast-paced' / 'romantic comedy, light and sarcastic')",
+  "register": "How characters speak — formal/casual/slangy/profane? Use examples.",
+  "setting": "Period + place + social class (affects word choice heavily)",
+  "characters": [
+    {
+      "name": "English character name",
+      "sinhala_name": "Locked Sinhala transliteration (phonetic, natural)",
+      "description": "1-2 sentence character description",
+      "speech_style": "How THIS character speaks — respectful (ඔයා), aggressive (උඹ), formal, slangy, etc."
+    }
+  ],
+  "locations": [{"name": "English", "sinhala_name": "Sinhala"}],
+  "proper_nouns": [{"english": "term", "sinhala": "locked form", "note"?: "keep in English if acronym"}],
+  "cultural_notes": "Anything a Sinhala viewer needs: untranslatable jokes, cultural equivalents, taboo words to soften, period accuracy"
+}
+
+For character speech_style, be SPECIFIC:
+  - A cop might use formal police jargon → "නිලධාරියා" register
+  - A teen might use slang → casual "මචං" register
+  - A parent to child → warm but authoritative, "පුතේ/දූපුති" address
+  - Enemies arguing → aggressive "උඹ/තමුසේ" pronouns`;
+
+// ── Step 2: Glossary generation ──────────────────────────────────────────
+//
+// Uses step 1 output as context. ~10-15 seconds.
+
+const STEP2_SYSTEM_PROMPT = `${LOCALIZER_SYSTEM_PROMPT}
+
+You are doing Part 2: Glossary Generation.
+
+Given the movie context from Part 1, generate a localization glossary of 15-25 entries.
+
+Produce JSON:
+{
+  "recurring_phrases": [
+    {"english": "phrase from the movie", "sinhala": "natural spoken Sinhala", "note"?: "context"}
+  ],
+  "glossary": [
+    {
+      "english": "English term/idiom/slang",
+      "sinhala": "Natural everyday spoken Sinhala translation",
+      "note"?: "Context or usage note"
+    }
+  ]
+}
+
+STRICT GLOSSARY RULES:
+  - NEVER use formal, literary, or news-style Sinhala (ලිඛිත භාෂාව).
+  - Use everyday, casual phrasing just like real people speak on the street in Sri Lanka.
+  - Keep translations concise so they fit standard subtitle character limits.
+  - Include: common idioms, slang, catchphrases, jargon (police/sci-fi/medical), recurring expressions.
+  - Example tone: "I told you so" → "මම කිව්වනේ." / "Let's get out of here" → "අපි ඉක්මනට මෙතනින් යමු."
+  - Honor the character speech styles from Part 1 — if a character uses "උඹ", glossary entries for their lines should match.`;
+
+// ── Step 1 implementation ────────────────────────────────────────────────
+
+export interface ResearchBriefStep1 {
+  summary: string;
+  tone: string;
+  register: string;
+  setting: string;
+  characters: {
+    name: string;
+    sinhala_name: string;
+    description: string;
+    speech_style: string;
+  }[];
+  locations: { name: string; sinhala_name: string }[];
+  proper_nouns: GlossaryEntry[];
+  cultural_notes: string;
+}
+
+export async function buildResearchStep1(
+  ctx: TranslationContextBundle,
+  apiKey: string,
+  opts?: { signal?: AbortSignal }
+): Promise<ResearchBriefStep1> {
+  const userPrompt = `Movie/TV metadata:
+
+${JSON.stringify(ctx, null, 2)}
+
+Produce Part 1 (context analysis) JSON now.`;
+
+  const result = await callDeepSeek({
+    apiKey,
+    // Uses DEFAULT_MODEL (deepseek-v4-pro) — override via DEEPSEEK_MODEL env var
+    messages: [
+      { role: "system", content: STEP1_SYSTEM_PROMPT },
+      { role: "user", content: userPrompt },
+    ],
+    temperature: 0.2,
+    responseFormat: "json_object",
+    maxTokens: 2500,
+    signal: opts?.signal,
+  });
+
+  try {
+    return JSON.parse(result.content) as ResearchBriefStep1;
+  } catch {
+    const match = result.content.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]) as ResearchBriefStep1;
+      } catch {}
+    }
+    throw new Error(
+      "Step 1 returned invalid JSON. Please try again."
+    );
+  }
+}
+
+// ── Step 2 implementation ────────────────────────────────────────────────
+
+export interface ResearchBriefStep2 {
+  recurring_phrases: GlossaryEntry[];
+  glossary: GlossaryEntry[];
+}
+
+export async function buildResearchStep2(
+  ctx: TranslationContextBundle,
+  step1: ResearchBriefStep1,
+  apiKey: string,
+  opts?: { signal?: AbortSignal }
+): Promise<ResearchBriefStep2> {
+  const userPrompt = `Movie: ${ctx.title} (${ctx.release_year})
+
+Part 1 context (already established):
+${JSON.stringify(step1, null, 2)}
+
+Now produce Part 2 (glossary) JSON. 15-25 entries, all in natural spoken Sinhala.`;
+
+  const result = await callDeepSeek({
+    apiKey,
+    // Uses DEFAULT_MODEL (deepseek-v4-pro) — override via DEEPSEEK_MODEL env var
+    messages: [
+      { role: "system", content: STEP2_SYSTEM_PROMPT },
+      { role: "user", content: userPrompt },
+    ],
+    temperature: 0.3,
+    responseFormat: "json_object",
+    maxTokens: 2000,
+    signal: opts?.signal,
+  });
+
+  try {
+    return JSON.parse(result.content) as ResearchBriefStep2;
+  } catch {
+    const match = result.content.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]) as ResearchBriefStep2;
+      } catch {}
+    }
+    throw new Error(
+      "Step 2 returned invalid JSON. Please try again."
+    );
+  }
+}
+
+// ── Combine steps into final brief ───────────────────────────────────────
+
+export function combineBriefSteps(
+  step1: ResearchBriefStep1,
+  step2: ResearchBriefStep2
+): ResearchBrief {
+  return {
+    summary: step1.summary,
+    setting: step1.setting,
+    tone: step1.tone,
+    register: step1.register,
+    characters: step1.characters.map((c) => ({
+      name: c.name,
+      description: `${c.description} (Speech: ${c.speech_style})`,
+      sinhala_name: c.sinhala_name,
+    })),
+    locations: step1.locations,
+    recurring_phrases: step2.recurring_phrases ?? [],
+    proper_nouns: step1.proper_nouns ?? [],
+    cultural_notes: step1.cultural_notes,
+    glossary: step2.glossary ?? [],
+  };
+}
+
+// ── Markdown rendering for display ───────────────────────────────────────
+
+export function briefToMarkdown(brief: ResearchBrief): string {
+  const lines: string[] = [];
+  lines.push(`# Translation Brief: ${brief.tone}`);
+  lines.push("");
+  lines.push("## Summary");
+  lines.push(brief.summary);
+  lines.push("");
+  lines.push("## Setting & Period");
+  lines.push(brief.setting);
+  lines.push("");
+  lines.push("## Tone & Register");
+  lines.push(`**Tone:** ${brief.tone}`);
+  lines.push(`**Register:** ${brief.register}`);
+  lines.push("");
+  lines.push("## Cultural Notes");
+  lines.push(brief.cultural_notes);
+  lines.push("");
+  lines.push("## Characters (locked names + speech style)");
+  for (const c of brief.characters) {
+    lines.push(`- ${c.name} → ${c.sinhala_name} — ${c.description}`);
+  }
+  lines.push("");
+  lines.push("## Locations");
+  for (const l of brief.locations) {
+    lines.push(`- ${l.name} → ${l.sinhala_name}`);
+  }
+  lines.push("");
+  lines.push("## Recurring Phrases");
+  for (const p of brief.recurring_phrases) {
+    lines.push(`- "${p.english}" → "${p.sinhala}"${p.note ? ` // ${p.note}` : ""}`);
+  }
+  lines.push("");
+  lines.push("## Glossary (natural spoken Sinhala)");
+  for (const g of brief.glossary) {
+    lines.push(`- "${g.english}" → "${g.sinhala}"${g.note ? ` // ${g.note}` : ""}`);
+  }
+  return lines.join("\n");
+}
+
+// ── Legacy functions (kept for backward compat, unused now) ──────────────
 
 export async function buildResearchBrief(
   ctx: TranslationContextBundle,
   apiKey: string,
   opts?: { signal?: AbortSignal }
 ): Promise<ResearchBrief> {
-  const userPrompt = `Movie/TV metadata for translation brief:
-
-${JSON.stringify(ctx, null, 2)}
-
-Produce the translation brief JSON now. Schema:
-{
-  "summary": string,
-  "setting": string,
-  "tone": string,
-  "register": string,
-  "characters": [{"name": string, "description": string, "sinhala_name": string}],
-  "locations": [{"name": string, "sinhala_name": string}],
-  "recurring_phrases": [{"english": string, "sinhala": string, "note"?: string}],
-  "proper_nouns": [{"english": string, "sinhala": string, "note"?: string}],
-  "cultural_notes": string,
-  "glossary": [{"english": string, "sinhala": string, "note"?: string}]
-}`;
-
-  const result = await callDeepSeek({
-    apiKey,
-    messages: [
-      { role: "system", content: RESEARCH_SYSTEM_PROMPT },
-      { role: "user", content: userPrompt },
-    ],
-    temperature: 0.2,
-    responseFormat: "json_object",
-    maxTokens: 3500,
-    signal: opts?.signal,
-  });
-
-  let parsed: ResearchBrief;
-  try {
-    parsed = JSON.parse(result.content) as ResearchBrief;
-  } catch (err) {
-    throw new Error(
-      `DeepSeek returned invalid JSON for research brief: ${result.content.slice(0, 200)}`
-    );
-  }
-  return parsed;
+  const step1 = await buildResearchStep1(ctx, apiKey, opts);
+  const step2 = await buildResearchStep2(ctx, step1, apiKey, opts);
+  return combineBriefSteps(step1, step2);
 }
 
-/**
- * Stream the research brief as JSON. Yields raw text chunks as they
- * arrive from DeepSeek (for live display), and returns the parsed
- * ResearchBrief object when complete.
- *
- * Uses a SINGLE DeepSeek call with JSON mode — no separate
- * buildResearchBrief call needed. This avoids Netlify function
- * timeouts (the streaming call stays alive, but a second synchronous
- * call would exceed the 26s free-tier limit).
- */
-export async function* streamResearchBriefJson(
-  ctx: TranslationContextBundle,
-  apiKey: string,
-  opts?: { signal?: AbortSignal }
-): AsyncGenerator<string, ResearchBrief, unknown> {
-  const userPrompt = `Movie/TV metadata for translation brief:
-
-${JSON.stringify(ctx, null, 2)}
-
-Produce the translation brief JSON now. Use Sinhala Unicode script (අ-෴) for all sinhala/sinhala_name fields. Be specific and practical.`;
-
-  let full = "";
-  for await (const chunk of streamDeepSeek({
-    apiKey,
-    messages: [
-      { role: "system", content: RESEARCH_SYSTEM_PROMPT },
-      { role: "user", content: userPrompt },
-    ],
-    temperature: 0.2,
-    signal: opts?.signal,
-  })) {
-    full += chunk;
-    yield chunk;
-  }
-
-  // Parse the accumulated JSON.
-  let parsed: ResearchBrief;
-  try {
-    // DeepSeek with json_object mode wraps in a top-level object.
-    parsed = JSON.parse(full) as ResearchBrief;
-  } catch {
-    // Try to extract a JSON object from the text.
-    const match = full.match(/\{[\s\S]*\}/);
-    if (match) {
-      try {
-        parsed = JSON.parse(match[0]) as ResearchBrief;
-      } catch {
-        throw new Error(
-          "DeepSeek returned invalid JSON for research brief. Please try again."
-        );
-      }
-    } else {
-      throw new Error(
-        "DeepSeek returned invalid JSON for research brief. Please try again."
-      );
-    }
-  }
-  return parsed;
-}
-
-/** Stream the brief as readable text — used for the live "research" panel. */
-export async function* streamResearchBrief(
-  ctx: TranslationContextBundle,
-  apiKey: string,
-  opts?: { signal?: AbortSignal }
-): AsyncGenerator<string, ResearchBrief, unknown> {
-  const userPrompt = `Movie/TV metadata for translation brief:
-
-${JSON.stringify(ctx, null, 2)}
-
-Produce the translation brief as readable Markdown with these sections:
-  ## Summary
-  ## Setting & Period
-  ## Tone & Register
-  ## Characters (name → sinhala transliteration, description)
-  ## Locations
-  ## Recurring Phrases
-  ## Proper Nouns
-  ## Cultural Notes
-  ## Glossary (english | sinhala | note)
-
-Use Sinhala Unicode script for all sinhala translations. Be specific and practical — this brief will be consumed by a translation agent.`;
-
-  let full = "";
-  for await (const chunk of streamDeepSeek({
-    apiKey,
-    messages: [
-      { role: "system", content: RESEARCH_SYSTEM_PROMPT },
-      { role: "user", content: userPrompt },
-    ],
-    temperature: 0.3,
-    signal: opts?.signal,
-  })) {
-    full += chunk;
-    yield chunk;
-  }
-
-  // Best-effort: not strictly needed for streaming endpoint, but useful.
-  return {} as ResearchBrief;
-}
-
-const TRANSLATION_SYSTEM_PROMPT = `You are a professional English → Sinhala subtitle translator.
+const TRANSLATION_SYSTEM_PROMPT = `You are a professional English → Sinhala subtitle translator who writes the way real Sinhala speakers actually talk — NOT like Google Translate.
 
 You are given a TOON (Token-Oriented Object Notation) payload containing:
   - brief: a locked TRANSLATION BRIEF (characters, glossary, tone, register, cultural notes)
@@ -233,16 +334,72 @@ TOON grammar (for reading the input only — your OUTPUT is JSON):
 
 Your job: return a JSON object { "translations": ["...", "...", ...] } where the i-th string is the Sinhala translation of the i-th cue in "batch", in EXACTLY the same order.
 
-Rules:
-  1. Use Sinhala Unicode script (අ-෴) for all Sinhala text.
-  2. Honor the glossary: every glossary entry MUST use its locked sinhala form.
-  3. Honor character name transliterations.
-  4. Match the requested TONE and REGISTER exactly. Slang stays slang, formal stays formal.
-  5. Keep subtitle readability: short, natural, conversational. One subtitle line ideally ≤ 42 chars; two lines max. Preserve the original line breaks of the cue (if the English cue has two lines, the Sinhala should too).
-  6. Do NOT translate proper nouns already in the glossary's "sinhala" field — use that exact form.
-  7. Do NOT add explanations, quotes, brackets, or notes inside translations.
-  8. If a line is untranslatable (e.g. pure sound effect, music note), keep the original text unchanged.
-  9. Output JSON ONLY. No prose before/after.`;
+CRITICAL — NATURAL LANGUAGE RULES (read these carefully):
+  1. **TRANSLATE MEANING, NOT WORDS.** Never translate word-for-word. Read the whole line, understand what the speaker means in context, then write the SAME meaning in natural Sinhala the way a Sinhala speaker would say it.
+
+  2. **Sound like a real person.** Imagine a Sinhala-speaking friend saying this line in conversation. Write what they would naturally say — not a dictionary translation. Use everyday spoken Sinhala (සාහිත්‍ය නොවේ, කතාබහ භාෂාව).
+
+  3. **Match the speaker's emotion and tone.** If the English is angry/urgent/sarcastic/whispered/drunk, the Sinhala should feel the same way. Don't flatten emotion into neutral text.
+
+  4. **Use context from the brief.** If the brief says the scene is a tense standoff, keep translations short and clipped. If it's two friends joking, use casual playful Sinhala. If it's a formal ceremony, use respectful language.
+
+  5. **Reorder freely for natural Sinhala syntax.** Sinhala word order is SOV (subject-object-verb), English is SVO. Don't preserve English word order — restructure so the Sinhala flows naturally.
+
+  6. **Replace untranslatable English idioms with Sinhala equivalents.** Don't translate "break a leg" as "කකුලක් කඩන්න" — use the Sinhala equivalent of the meaning ("සුබ පැතුම්" or similar). When in doubt, convey the intent, not the literal words.
+
+  7. **Contractions and casual speech are GOOD.** English "I'm", "don't", "gonna" → use the Sinhala equivalent of casual speech (කතාබහ විලාසය). Don't stiffen up.
+
+  8. **Short and punchy wins.** Subtitles must be readable in 2-4 seconds. If a literal translation is long, find a shorter way to say the same thing. Cut filler words.
+
+HARD RULES:
+  - Use Sinhala Unicode script (අ-෴) for all Sinhala text.
+  - Honor the glossary: every glossary entry MUST use its locked sinhala form.
+  - Honor character name transliterations.
+  - One subtitle line ideally ≤ 42 chars; two lines max. Preserve the original line breaks of the cue (if the English cue has two lines, the Sinhala should too).
+  - Do NOT translate proper nouns already in the glossary's "sinhala" field — use that exact form.
+  - Do NOT add explanations, quotes, brackets, or notes inside translations.
+  - If a line is untranslatable (e.g. pure sound effect, music note), keep the original text unchanged.
+  - Output JSON ONLY. No prose before/after.
+
+FEW-SHOT EXAMPLES — study these:
+
+English: "I'm not going to tell you again."
+❌ Literal (BAD): "මම නැවත ඔබට කියන්නේ නැහැ."
+✅ Natural (GOOD): "අනිවාර්යයෙන්ම ආයේ කියන්නේ නෑ."
+
+English: "What the hell are you doing here?"
+❌ Literal (BAD): "මොකද මෙතන කරන්නේ?"
+✅ Natural (GOOD): "මොන විකාරයක්ද ඔය මෙතන කරන්නේ?"
+
+English: "We need to talk."
+❌ Literal (BAD): "අපට කතා කළ යුතුය."
+✅ Natural (GOOD): "දෙයක් කතා කරන්න තියෙනවා."
+
+English: "I told you so."
+❌ Literal (BAD): "මම ඔබට එසේ කීවෙමි."
+✅ Natural (GOOD): "මම නේ කිව්වේ."
+
+English: "You have no idea."
+❌ Literal (BAD): "ඔබට අදහසක් නැහැ."
+✅ Natural (GOOD): "ඔයාට අමුතු දෙයක් වගේ නේද?"
+
+English: "Get out of here!"
+❌ Literal (BAD): "මෙතනින් එළියට වන්න!"
+✅ Natural (GOOD): "මෙතනින් යන්න!"
+
+English: "Are you serious right now?"
+❌ Literal (BAD): "ඔබ දැන් බර සර වැඩක්ද?"
+✅ Natural (GOOD): "ප්‍රහාරයක්ද ඔය දැන් කියන්නේ?"
+
+English: "I can't do this anymore."
+❌ Literal (BAD): "මට මේක තවදුරටත් කරන්න බැහැ."
+✅ Natural (GOOD): "මට දුරට මේක කරන්න බැහැ."
+
+English: "Let me see."
+❌ Literal (BAD): "මට බලන්න දෙන්න."
+✅ Natural (GOOD): "පෙන්නපන්."
+
+Notice how the GOOD translations use casual verb forms (ආයේ, නෑ, තියෙනවා, වගේද, ප්‍රහාරයක්ද), drop unnecessary pronouns, and sound like actual Sinhala conversation — NOT like a textbook. ALWAYS aim for this style unless the brief says formal.`;
 
 export interface TranslateBatchInput {
   brief: ResearchBrief;

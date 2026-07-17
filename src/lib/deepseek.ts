@@ -2,15 +2,29 @@
  * DeepSeek API client.
  *
  * DeepSeek exposes an OpenAI-compatible /chat/completions endpoint.
- * We use the `deepseek-chat` model for translation because it is
- * fast and cheap, and supports JSON mode via `response_format`.
+ * We use the `deepseek-v4-pro` model (latest V4) for all calls:
+ *   - research step 1 (context analysis)
+ *   - research step 2 (glossary generation)
+ *   - batched translation
+ *   - per-cue re-translate
+ *   - AI movie search fallback
+ *
+ * V4 supports JSON mode via `response_format` and is significantly
+ * better at natural Sinhala phrasing than V3 (deepseek-chat).
+ *
+ * Set the model via the `DEEPSEEK_MODEL` env var if you need to override
+ * (e.g. "deepseek-v4-flash" for faster/cheaper, "deepseek-v4-pro"
+ * for best quality, "deepseek-chat" to fall back to V3 if V4 is unavailable).
  *
  * The API key MUST be passed server-side only — never expose it to
- * the browser. The UI collects it from the user, but it is sent
- * only inside server-side fetch calls.
+ * the browser.
  */
 
 const DEEPSEEK_BASE = "https://api.deepseek.com/v1";
+
+/** Default model — override with DEEPSEEK_MODEL env var. */
+export const DEFAULT_MODEL =
+  process.env.DEEPSEEK_MODEL || "deepseek-v4-pro";
 
 export interface DeepSeekMessage {
   role: "system" | "user" | "assistant";
@@ -42,12 +56,12 @@ export async function callDeepSeek(
 ): Promise<DeepSeekCallResult> {
   if (!opts.apiKey) {
     throw new Error(
-      "DeepSeek API key is missing. Set DEEPSEEK_API_KEY on the server or pass it via the UI settings."
+      "DeepSeek API key is missing. Set DEEPSEEK_API_KEY on the server."
     );
   }
 
   const body: Record<string, unknown> = {
-    model: opts.model ?? "deepseek-chat",
+    model: opts.model ?? DEFAULT_MODEL,
     messages: opts.messages,
     temperature: opts.temperature ?? 0.2,
     stream: false,
@@ -100,7 +114,7 @@ export async function* streamDeepSeek(
     throw new Error("DeepSeek API key is missing.");
   }
   const body: Record<string, unknown> = {
-    model: opts.model ?? "deepseek-chat",
+    model: opts.model ?? DEFAULT_MODEL,
     messages: opts.messages,
     temperature: opts.temperature ?? 0.3,
     stream: true,
