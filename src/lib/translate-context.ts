@@ -321,6 +321,8 @@ ${JSON.stringify(ctx, null, 2)}
 
 Produce Part 1 (context analysis) AND Part 2 (glossary) as a single JSON object. Use Sinhala Unicode script (අ-෴) for all sinhala/sinhala_name fields. All Sinhala MUST be natural spoken Sinhala (කතාබහ භාෂාව), NEVER formal/literary.
 
+Output ONLY the JSON object — no markdown code fences, no preamble, no trailing text. Start with { and end with }.
+
 JSON schema:
 {
   "summary": "3-5 sentence plot summary",
@@ -347,7 +349,11 @@ Glossary must have 15-25 entries. Examples of natural Sinhala:
       { role: "user", content: userPrompt },
     ],
     temperature: 0.2,
-    responseFormat: "json_object",
+    // NOTE: do NOT use responseFormat: "json_object" for streaming.
+    // V4 buffers the entire response server-side when JSON mode is on,
+    // which kills the live-streaming UX. The robust parser at the end
+    // handles whatever format V4 returns (raw JSON, markdown-fenced,
+    // with preambles, etc.).
     signal: opts?.signal,
   })) {
     full += chunk;

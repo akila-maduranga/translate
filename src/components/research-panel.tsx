@@ -136,14 +136,23 @@ export function ResearchPanel({
         const reader = res.body.getReader();
         const decoder = new TextDecoder("utf-8");
         let full = "";
+        let lastUpdate = 0;
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           const chunk = decoder.decode(value, { stream: true });
           full += chunk;
-          setText(full);
+          // Throttle UI updates to ~30fps to avoid React re-render storms
+          // when DeepSeek streams one character at a time.
+          const now = Date.now();
+          if (now - lastUpdate > 33) {
+            setText(full);
+            lastUpdate = now;
+          }
         }
+        // Final flush — make sure the last chunk is rendered.
+        setText(full);
 
         if (full.includes("[ERROR]")) {
           throw new Error(
