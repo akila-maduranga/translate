@@ -26,6 +26,7 @@ import type { TranslationContextBundle } from "@/lib/tmdb";
 import { callDeepSeek } from "@/lib/deepseek";
 import type { SubtitleCue } from "@/lib/subtitle";
 import { toonStringify } from "@/lib/toon";
+import { parseJsonFromLlm } from "@/lib/json-parser";
 
 export interface GlossaryEntry {
   english: string;
@@ -172,22 +173,14 @@ Produce Part 1 (context analysis) JSON now.`;
     ],
     temperature: 0.2,
     responseFormat: "json_object",
-    maxTokens: 2500,
+    maxTokens: 4000,
     signal: opts?.signal,
   });
 
   try {
-    return JSON.parse(result.content) as ResearchBriefStep1;
-  } catch {
-    const match = result.content.match(/\{[\s\S]*\}/);
-    if (match) {
-      try {
-        return JSON.parse(match[0]) as ResearchBriefStep1;
-      } catch {}
-    }
-    throw new Error(
-      "Step 1 returned invalid JSON. Please try again."
-    );
+    return parseJsonFromLlm<ResearchBriefStep1>(result.content);
+  } catch (err: any) {
+    throw new Error(`Step 1: ${err.message}`);
   }
 }
 
@@ -220,22 +213,14 @@ Now produce Part 2 (glossary) JSON. 15-25 entries, all in natural spoken Sinhala
     ],
     temperature: 0.3,
     responseFormat: "json_object",
-    maxTokens: 2000,
+    maxTokens: 3000,
     signal: opts?.signal,
   });
 
   try {
-    return JSON.parse(result.content) as ResearchBriefStep2;
-  } catch {
-    const match = result.content.match(/\{[\s\S]*\}/);
-    if (match) {
-      try {
-        return JSON.parse(match[0]) as ResearchBriefStep2;
-      } catch {}
-    }
-    throw new Error(
-      "Step 2 returned invalid JSON. Please try again."
-    );
+    return parseJsonFromLlm<ResearchBriefStep2>(result.content);
+  } catch (err: any) {
+    throw new Error(`Step 2: ${err.message}`);
   }
 }
 
@@ -480,7 +465,7 @@ ${toonPayload}`;
 
   let arr: string[];
   try {
-    const parsed = JSON.parse(result.content) as { translations?: string[] };
+    const parsed = parseJsonFromLlm<{ translations?: string[] }>(result.content);
     arr = parsed.translations ?? [];
   } catch {
     // Last-ditch: try to recover an array out of the raw text.

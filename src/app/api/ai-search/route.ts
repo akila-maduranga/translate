@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { callDeepSeek } from "@/lib/deepseek";
 import type { TranslationContextBundle } from "@/lib/tmdb";
 import { getCurrentUser } from "@/lib/auth";
+import { parseJsonFromLlm } from "@/lib/json-parser";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -99,7 +100,7 @@ Rules:
       }>;
     };
     try {
-      parsed = JSON.parse(result.content);
+      parsed = parseJsonFromLlm<typeof parsed>(result.content);
     } catch {
       return NextResponse.json(
         { error: "Could not identify the movie. Try a different query." },
