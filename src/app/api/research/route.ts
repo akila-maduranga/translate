@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { streamResearchBrief, buildResearchBrief } from "@/lib/translate-context";
+import { streamResearchBriefJson } from "@/lib/translate-context";
 import type { TranslationContextBundle } from "@/lib/tmdb";
 import { getCachedBrief, upsertCachedBrief } from "@/lib/brief-cache";
 import { getCurrentUser } from "@/lib/auth";
@@ -10,30 +10,18 @@ export const maxDuration = 300;
 
 /**
  * POST /api/research
- * Body: {
- *   context: TranslationContextBundle,
- *   tmdb_id: number,
- *   tmdb_media_type: "movie" | "tv",
- *   deepseek_api_key?: string,
- *   force_refresh?: boolean  // ignore cache and re-run DeepSeek
- * }
  *
- * Streams the research brief as plain-text chunks. Behaviour:
+ * Streams the research brief as raw text chunks (JSON from DeepSeek).
  *
  *   1. If a cached brief exists AND force_refresh is false → emit a
- *      "served from cache" notice followed by the cached markdown,
- *      then [DONE]. No DeepSeek call is made.
+ *      "served from cache" notice, then [DONE]. No DeepSeek call.
  *
- *   2. Otherwise → stream the brief live. After streaming finishes,
- *      we ALSO call buildResearchBrief() to get the structured JSON
- *      (the streamed version is markdown, not JSON), then upsert the
- *      cache. The structured brief is what /api/translate needs.
- *
- * This way users only pay for research once per movie — subsequent
- * loads of the same movie (or re-translations) read from the cache.
+ *   2. Otherwise → stream the JSON brief live from DeepSeek. After
+ *      streaming completes, parse the accumulated JSON and cache it.
+ *      SINGLE DeepSeek call — no separate buildResearchBrief call
+ *      (which would timeout on Netlify's free tier).
  */
 export async function POST(req: NextRequest) {
-  // Auth gate — must be logged in.
   const user = await getCurrentUser();
   if (!user) {
     return new Response(JSON.stringify({ error: "Please log in to continue." }), {
@@ -70,14 +58,13 @@ export async function POST(req: NextRequest) {
         const header =
           `[CACHE HIT] Loaded cached research brief for ${cached.title}.\n` +
           `Last updated: ${cached.updatedAt.toISOString()}\n` +
-          `To re-run research with DeepSeek, click "Re-run" instead.\n\n`;
+          `Click "Refresh" to re-run with AI.\n\n`;
         const stream = new ReadableStream({
           start(controller) {
             const enc = new TextEncoder();
-            const send = (s: string) => controller.enqueue(enc.encode(s));
-            send(header);
-            send(cached.rawMarkdown);
-            send("\n\n[DONE]");
+            controller.enqueue(enc.encode(header));
+            controller.enqueue(enc.encode(cached.rawMarkdown));
+            controller.enqueue(enc.encode("\n\n[DONE]"));
             controller.close();
           },
         });
@@ -91,12 +78,11 @@ export async function POST(req: NextRequest) {
         });
       }
     } catch (err) {
-      // Cache failures are non-fatal — fall through to live research.
       console.error("[research] cache read failed:", err);
     }
   }
 
-  // 2. Live research — server-side DeepSeek key only (no client keys).
+  // 2. Live research.
   const apiKey = process.env.DEEPSEEK_API_KEY || "";
   if (!apiKey) {
     return new Response(
@@ -110,33 +96,44 @@ export async function POST(req: NextRequest) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (s: string) => controller.enqueue(encoder.encode(s + "\n"));
+      // NOTE: do NOT add "\n" after each chunk — DeepSeek streams
+      // Sinhala text one character at a time, and adding "\n" would
+      // break every character onto its own line. Just send raw chunks.
+      const send = (s: string) => controller.enqueue(encoder.encode(s));
       try {
-        send("[LIVE] Running DeepSeek research...");
+        send("[LIVE] Researching the movie with AI...\n\n");
         let full = "";
-        for await (const chunk of streamResearchBrief(body.context!, apiKey)) {
-          full += chunk;
-          send(chunk);
+        const gen = streamResearchBriefJson(body.context!, apiKey);
+        let brief;
+        while (true) {
+          const result = await gen.next();
+          if (result.done) {
+            brief = result.value;
+            break;
+          }
+          full += result.value;
+          send(result.value);
         }
 
-        // Now derive the structured JSON brief and cache it.
-        send("\n[INFO] Building structured brief and saving to cache...");
-        try {
-          const brief = await buildResearchBrief(body.context!, apiKey);
-          await upsertCachedBrief({
-            tmdbId: body.tmdb_id!,
-            tmdbMediaType: body.tmdb_media_type!,
-            title: body.context!.title,
-            rawMarkdown: full,
-            brief,
-          });
-          send("[INFO] Brief cached. Future translations of this title will reuse it.");
-        } catch (cacheErr: any) {
-          // Caching failure is non-fatal — translation can still use the live brief.
-          send(`[WARN] Failed to cache brief: ${cacheErr.message}`);
+        // Cache the parsed brief.
+        if (brief) {
+          try {
+            await upsertCachedBrief({
+              tmdbId: body.tmdb_id!,
+              tmdbMediaType: body.tmdb_media_type!,
+              title: body.context!.title,
+              rawMarkdown: full,
+              brief,
+            });
+            send("\n\n[INFO] Brief cached. You can now translate subtitles.");
+          } catch (cacheErr: any) {
+            send(`\n\n[WARN] Failed to cache brief: ${cacheErr.message}`);
+          }
+        } else {
+          send("\n\n[WARN] No structured brief was returned.");
         }
 
-        send("[DONE]");
+        send("\n\n[DONE]");
       } catch (err: any) {
         const msg = err.message || "";
         let friendly = msg;

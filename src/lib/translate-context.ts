@@ -114,6 +114,66 @@ Produce the translation brief JSON now. Schema:
   return parsed;
 }
 
+/**
+ * Stream the research brief as JSON. Yields raw text chunks as they
+ * arrive from DeepSeek (for live display), and returns the parsed
+ * ResearchBrief object when complete.
+ *
+ * Uses a SINGLE DeepSeek call with JSON mode — no separate
+ * buildResearchBrief call needed. This avoids Netlify function
+ * timeouts (the streaming call stays alive, but a second synchronous
+ * call would exceed the 26s free-tier limit).
+ */
+export async function* streamResearchBriefJson(
+  ctx: TranslationContextBundle,
+  apiKey: string,
+  opts?: { signal?: AbortSignal }
+): AsyncGenerator<string, ResearchBrief, unknown> {
+  const userPrompt = `Movie/TV metadata for translation brief:
+
+${JSON.stringify(ctx, null, 2)}
+
+Produce the translation brief JSON now. Use Sinhala Unicode script (අ-෴) for all sinhala/sinhala_name fields. Be specific and practical.`;
+
+  let full = "";
+  for await (const chunk of streamDeepSeek({
+    apiKey,
+    messages: [
+      { role: "system", content: RESEARCH_SYSTEM_PROMPT },
+      { role: "user", content: userPrompt },
+    ],
+    temperature: 0.2,
+    signal: opts?.signal,
+  })) {
+    full += chunk;
+    yield chunk;
+  }
+
+  // Parse the accumulated JSON.
+  let parsed: ResearchBrief;
+  try {
+    // DeepSeek with json_object mode wraps in a top-level object.
+    parsed = JSON.parse(full) as ResearchBrief;
+  } catch {
+    // Try to extract a JSON object from the text.
+    const match = full.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        parsed = JSON.parse(match[0]) as ResearchBrief;
+      } catch {
+        throw new Error(
+          "DeepSeek returned invalid JSON for research brief. Please try again."
+        );
+      }
+    } else {
+      throw new Error(
+        "DeepSeek returned invalid JSON for research brief. Please try again."
+      );
+    }
+  }
+  return parsed;
+}
+
 /** Stream the brief as readable text — used for the live "research" panel. */
 export async function* streamResearchBrief(
   ctx: TranslationContextBundle,
